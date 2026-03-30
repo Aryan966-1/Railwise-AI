@@ -1,13 +1,64 @@
 from datetime import datetime
 from math import ceil
 
-from sqlalchemy import func
+from sqlalchemy import func, text
+from sqlalchemy.orm import joinedload
 
 from app.models.booking import Booking
 from app.models.seat_availability import SeatAvailability
 from app.models.train import Train
 from app.models.user import User
+from app.utils.auth import AuthenticationError
 from app.utils.database import db
+
+
+_BOOKING_SCHEMA_READY = False
+
+
+def _ensure_booking_schema() -> None:
+    global _BOOKING_SCHEMA_READY
+
+    if _BOOKING_SCHEMA_READY:
+        return
+
+    with db.engine.begin() as connection:
+        connection.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS source VARCHAR(100)"))
+        connection.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS destination VARCHAR(100)"))
+        connection.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS journey_date DATE"))
+        connection.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITHOUT TIME ZONE"))
+        connection.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS booking_time TIMESTAMP WITHOUT TIME ZONE"))
+
+        connection.execute(
+            text(
+                """
+                UPDATE bookings AS booking
+                SET
+                    source = COALESCE(booking.source, train.source),
+                    destination = COALESCE(booking.destination, train.destination),
+                    journey_date = COALESCE(booking.journey_date, train.journey_date)
+                FROM trains AS train
+                WHERE booking.train_id = train.id
+                  AND (
+                      booking.source IS NULL
+                      OR booking.destination IS NULL
+                      OR booking.journey_date IS NULL
+                  )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                UPDATE bookings
+                SET
+                    created_at = COALESCE(created_at, booking_time, CURRENT_TIMESTAMP),
+                    booking_time = COALESCE(booking_time, created_at, CURRENT_TIMESTAMP)
+                WHERE created_at IS NULL OR booking_time IS NULL
+                """
+            )
+        )
+
+    _BOOKING_SCHEMA_READY = True
 
 
 def _normalize_class_type(class_type: str) -> str:
@@ -28,21 +79,48 @@ def _get_rac_limit(total_seats: int) -> int:
     return max(1, ceil(total_seats * 0.1))
 
 
-def create_booking(user_id: int, train_id: int, class_type: str = "General") -> dict:
+def _get_authenticated_user(user_id: int) -> User:
     if not isinstance(user_id, int) or user_id <= 0:
-        raise ValueError("Invalid user_id.")
+        raise AuthenticationError("Authentication required.")
 
+    user = db.session.get(User, user_id)
+    if user is None:
+        raise AuthenticationError("Authenticated user was not found.")
+
+    return user
+
+
+def _serialize_booking(booking: Booking) -> dict:
+    created_at = booking.created_at or booking.booking_time
+
+    return {
+        "booking_id": booking.id,
+        "booking_reference": booking.booking_reference,
+        "status": booking.status,
+        "user_id": booking.user_id,
+        "train_id": booking.train_id,
+        "train_name": booking.train.name if booking.train else f"Train #{booking.train_id}",
+        "source": booking.source,
+        "destination": booking.destination,
+        "journey_date": booking.journey_date.isoformat() if booking.journey_date else "",
+        "class_type": booking.class_type,
+        "created_at": created_at.isoformat() if created_at else "",
+        "fare": round(float(booking.fare_snapshot or 0), 2),
+    }
+
+
+def create_booking(authenticated_user_id: int, train_id: int, class_type: str = "General") -> dict:
     if not isinstance(train_id, int) or train_id <= 0:
         raise ValueError("Invalid train_id.")
 
     normalized_class_type = _normalize_class_type(class_type)
     normalized_class_key = normalized_class_type.lower()
 
+    _ensure_booking_schema()
+
     try:
         with db.session.begin():
-            user = db.session.get(User, user_id)
-            if user is None:
-                raise ValueError("User does not exist.")
+            user = _get_authenticated_user(authenticated_user_id)
 
             train = db.session.get(Train, train_id)
             if train is None:
@@ -69,6 +147,7 @@ def create_booking(user_id: int, train_id: int, class_type: str = "General") -> 
                 db.session.query(func.count(Booking.id))
                 .filter(
                     Booking.train_id == train_id,
+                    func.lower(func.trim(Booking.class_type)) == normalized_class_key,
                     Booking.status == "RAC",
                 )
                 .scalar()
@@ -86,29 +165,45 @@ def create_booking(user_id: int, train_id: int, class_type: str = "General") -> 
             if seat.available_seats < 0:
                 raise ValueError("Seat availability cannot be negative.")
 
-            booking_time = datetime.utcnow()
-            temporary_booking_reference = f"TMP{booking_time.strftime('%H%M%S%f')}"
+            created_at = datetime.utcnow()
             new_booking = Booking(
                 user_id=user.id,
                 train_id=train.id,
+                source=train.source,
+                destination=train.destination,
+                journey_date=train.journey_date,
                 class_type=normalized_class_type,
                 status=status,
-                booking_reference=temporary_booking_reference,
+                booking_reference=f"TMP{created_at.strftime('%H%M%S%f')}",
                 fare_snapshot=float(seat.price or 0),
-                booking_time=booking_time,
+                created_at=created_at,
+                booking_time=created_at,
             )
 
             db.session.add(new_booking)
             db.session.flush()
 
-            booking_reference = _build_booking_reference(new_booking.id, booking_time)
-            new_booking.booking_reference = booking_reference
+            new_booking.booking_reference = _build_booking_reference(new_booking.id, created_at)
+            db.session.flush()
+            db.session.refresh(new_booking)
 
-        return {
-            "booking_id": new_booking.id,
-            "booking_reference": booking_reference,
-            "status": status,
-        }
+        return _serialize_booking(new_booking)
     except Exception:
         db.session.rollback()
         raise
+
+
+def list_user_bookings(authenticated_user_id: int) -> list[dict]:
+    _ensure_booking_schema()
+
+    user = _get_authenticated_user(authenticated_user_id)
+
+    bookings = (
+        db.session.query(Booking)
+        .options(joinedload(Booking.train))
+        .filter(Booking.user_id == user.id)
+        .order_by(func.coalesce(Booking.created_at, Booking.booking_time).desc(), Booking.id.desc())
+        .all()
+    )
+
+    return [_serialize_booking(booking) for booking in bookings]

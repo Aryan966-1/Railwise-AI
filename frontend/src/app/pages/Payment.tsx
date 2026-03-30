@@ -15,6 +15,7 @@ import { FloatingCard } from "../components/ui/FloatingCard";
 import { GlowButton } from "../components/ui/GlowButton";
 import { bookTrain } from "../utils/backendApi";
 import { useBookingStore } from "../utils/bookingStore";
+import { currentUser } from "../utils/currentUser";
 
 type PaymentMethod = "card" | "upi" | "netbanking" | "wallet";
 
@@ -54,7 +55,6 @@ export function Payment() {
 
     try {
       const response = await bookTrain({
-        user_id: 1,
         train_id: selectedTrain.train_id,
         class_type: selectedTrain.class_type,
       });
@@ -287,7 +287,7 @@ export function Payment() {
                 <div>
                   <p className="text-sm text-muted-foreground mb-1">Booking API payload</p>
                   <p className="text-xs text-muted-foreground">
-                    user_id: 1, train_id: {selectedTrain.train_id}, class_type: {selectedTrain.class_type}
+                    auth user: {currentUser.name} #{currentUser.id}, train_id: {selectedTrain.train_id}, class_type: {selectedTrain.class_type}
                   </p>
                 </div>
 

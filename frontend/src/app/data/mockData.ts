@@ -115,23 +115,17 @@ export const mockTrains: Train[] = [
 ];
 
 export const cities = [
-  'New Delhi',
-  'Mumbai Central',
-  'Bangalore',
-  'Chennai',
-  'Kolkata',
-  'Hyderabad',
-  'Pune',
-  'Ahmedabad',
-  'Jaipur',
+  'Delhi',
+  'Mumbai',
+  'Varanasi',
   'Lucknow',
-  'Chandigarh',
-  'Bhopal'
+  'Kolkata',
+  'Jaipur'
 ];
 
 export const popularRoutes = [
-  { from: 'New Delhi', to: 'Mumbai Central' },
-  { from: 'Bangalore', to: 'Chennai' },
-  { from: 'Kolkata', to: 'New Delhi' },
-  { from: 'Hyderabad', to: 'Bangalore' },
+  { from: 'Delhi', to: 'Mumbai' },
+  { from: 'Delhi', to: 'Varanasi' },
+  { from: 'Mumbai', to: 'Delhi' },
+  { from: 'Lucknow', to: 'Varanasi' },
 ];

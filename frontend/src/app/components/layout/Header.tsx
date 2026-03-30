@@ -2,10 +2,15 @@ import { Moon, Sun, Train } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { motion } from 'motion/react';
 import { Link, useLocation } from 'react-router';
+import { currentUser } from '../../utils/currentUser';
 
 export function Header() {
   const { isDark, toggleTheme } = useTheme();
   const location = useLocation();
+  const navItems = [
+    { to: '/', label: 'Book Train' },
+    { to: '/my-bookings', label: 'My Bookings' },
+  ];
 
   return (
     <motion.header
@@ -27,15 +32,34 @@ export function Header() {
           </span>
         </Link>
 
-        {location.pathname !== '/' && (
+        <div className="hidden md:flex items-center gap-3">
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="hidden md:flex items-center gap-2 text-sm text-muted-foreground"
+            className="flex items-center gap-2 text-sm"
           >
-            <span className="px-3 py-1 rounded-full bg-muted/50">Booking in progress</span>
+            {navItems.map((item) => {
+              const isActive = location.pathname === item.to;
+
+              return (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  className={`px-3 py-2 rounded-full transition-colors ${
+                    isActive
+                      ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-semibold'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
+            <span className="px-3 py-1 rounded-full bg-muted/50 text-muted-foreground">
+              {currentUser.name}
+            </span>
           </motion.div>
-        )}
+        </div>
 
         <motion.button
           whileHover={{ scale: 1.05 }}

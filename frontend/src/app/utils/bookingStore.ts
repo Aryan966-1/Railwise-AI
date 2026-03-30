@@ -22,6 +22,8 @@ interface BookingState {
   parsedIntent: ParsedIntent | null;
   searchResults: SearchResult[];
   searchError: string;
+  searchMessage: string;
+  searchProvider: string;
   bookingResult: BookingPayload | null;
 }
 
@@ -39,6 +41,8 @@ class BookingStore {
     parsedIntent: null,
     searchResults: [],
     searchError: "",
+    searchMessage: "",
+    searchProvider: "",
     bookingResult: null,
   };
 
@@ -76,6 +80,8 @@ class BookingStore {
       parsedIntent: null,
       searchResults: [],
       searchError: "",
+      searchMessage: "",
+      searchProvider: "",
       bookingResult: null,
     };
     this.notify();

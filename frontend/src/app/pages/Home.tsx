@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import {
@@ -19,10 +19,44 @@ import { FloatingCard } from "../components/ui/FloatingCard";
 import { GlowButton } from "../components/ui/GlowButton";
 import { FloatingChatbot } from "../components/ui/FloatingChatbot";
 import { cities, popularRoutes } from "../data/mockData";
-import { parseIntent, searchTrains, type ParsedIntent } from "../utils/backendApi";
+import {
+  parseIntent,
+  searchTrains,
+  type AssistantFormPayload,
+  type AssistantSearchPayload,
+  type ParsedIntent,
+} from "../utils/backendApi";
 import { useBookingStore } from "../utils/bookingStore";
 
-function mapQuickFilterToPreference(quickFilter: string) {
+type QuickFilter = "all" | "tatkal" | "premium";
+
+interface SearchFormState {
+  from: string;
+  to: string;
+  date: string;
+  timePreference: string;
+  trainClass: string;
+  quickFilter: QuickFilter;
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getTodayInputValue() {
+  return formatLocalDate(new Date());
+}
+
+function getTomorrowInputValue() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return formatLocalDate(tomorrow);
+}
+
+function mapQuickFilterToPreference(quickFilter: QuickFilter) {
   if (quickFilter === "tatkal") {
     return "cheapest";
   }
@@ -34,21 +68,115 @@ function mapQuickFilterToPreference(quickFilter: string) {
   return "balanced";
 }
 
+function mapPreferenceToQuickFilter(preference?: string): QuickFilter {
+  const normalizedPreference = preference?.trim().toLowerCase();
+
+  if (normalizedPreference === "cheapest") {
+    return "tatkal";
+  }
+
+  if (normalizedPreference === "fastest") {
+    return "premium";
+  }
+
+  return "all";
+}
+
+function normalizeAiDateForInput(rawDate: string, aiQuery: string) {
+  const today = getTodayInputValue();
+  const tomorrow = getTomorrowInputValue();
+  const normalizedRawDate = rawDate.trim();
+  const loweredRawDate = normalizedRawDate.toLowerCase();
+  const loweredQuery = aiQuery.trim().toLowerCase();
+
+  if (!normalizedRawDate) {
+    if (/\btomorrow\b/.test(loweredQuery)) {
+      return tomorrow;
+    }
+
+    if (/\btoday\b/.test(loweredQuery)) {
+      return today;
+    }
+
+    throw new Error("AI did not return a journey date.");
+  }
+
+  if (loweredRawDate === "tomorrow") {
+    return tomorrow;
+  }
+
+  if (loweredRawDate === "today") {
+    return today;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalizedRawDate)) {
+    return normalizedRawDate;
+  }
+
+  const dayMonthYearMatch = normalizedRawDate.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+  if (dayMonthYearMatch) {
+    const [, day, month, year] = dayMonthYearMatch;
+    return `${year}-${month}-${day}`;
+  }
+
+  const yearMonthDayMatch = normalizedRawDate.match(/^(\d{4})[/](\d{2})[/](\d{2})$/);
+  if (yearMonthDayMatch) {
+    const [, year, month, day] = yearMonthDayMatch;
+    return `${year}-${month}-${day}`;
+  }
+
+  const parsedDate = new Date(normalizedRawDate);
+  if (!Number.isNaN(parsedDate.getTime())) {
+    return formatLocalDate(parsedDate);
+  }
+
+  throw new Error(`AI returned an unsupported date format: ${rawDate}`);
+}
+
+function validateInputDate(dateValue: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+    throw new Error("Journey date must use YYYY-MM-DD for the date input.");
+  }
+
+  const [year, month, day] = dateValue.split("-").map(Number);
+  const candidateDate = new Date(year, month - 1, day);
+
+  if (
+    candidateDate.getFullYear() !== year ||
+    candidateDate.getMonth() !== month - 1 ||
+    candidateDate.getDate() !== day
+  ) {
+    throw new Error("Journey date is not a valid calendar date.");
+  }
+
+  if (dateValue < getTodayInputValue()) {
+    throw new Error("Journey date cannot be in the past.");
+  }
+
+  return dateValue;
+}
+
 export function Home() {
   const navigate = useNavigate();
   const { updateBooking } = useBookingStore();
 
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
-  const [trainClass, setTrainClass] = useState("3A");
-  const [quickFilter, setQuickFilter] = useState("all");
+  const [formData, setFormData] = useState<SearchFormState>({
+    from: "",
+    to: "",
+    date: getTodayInputValue(),
+    timePreference: "any",
+    trainClass: "3A",
+    quickFilter: "all",
+  });
   const [showFromSuggestions, setShowFromSuggestions] = useState(false);
   const [showToSuggestions, setShowToSuggestions] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [aiQuery, setAiQuery] = useState("");
-  const [submitError, setSubmitError] = useState("");
+  const [aiError, setAiError] = useState("");
+  const [searchError, setSearchError] = useState("");
+  const [isAskingAi, setIsAskingAi] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [parsedIntent, setParsedIntent] = useState<ParsedIntent | null>(null);
 
   const recentSearches = [
     { from: "Delhi", to: "Lucknow" },
@@ -60,39 +188,148 @@ export function Home() {
     return () => clearInterval(timer);
   }, []);
 
-  const filteredFromCities = cities.filter((city) =>
-    city.toLowerCase().includes(from.toLowerCase()),
+  const filteredFromCities = useMemo(
+    () => cities.filter((city) => city.toLowerCase().includes(formData.from.toLowerCase())),
+    [formData.from],
   );
 
-  const filteredToCities = cities.filter((city) =>
-    city.toLowerCase().includes(to.toLowerCase()),
+  const filteredToCities = useMemo(
+    () => cities.filter((city) => city.toLowerCase().includes(formData.to.toLowerCase())),
+    [formData.to],
   );
 
-  const runTrainSearch = async (
-    source: string,
-    destination: string,
-    journeyDate: string,
-    preference: string,
-    parsedIntentData: ParsedIntent | null,
-    naturalLanguageQuery: string,
-  ) => {
+  const updateFormField = <K extends keyof SearchFormState>(field: K, value: SearchFormState[K]) => {
+    setFormData((currentFormData) => ({
+      ...currentFormData,
+      [field]: value,
+    }));
+  };
+
+  const populateFormFromAi = (aiData: ParsedIntent, originalQuery: string) => {
+    const normalizedDate = validateInputDate(
+      normalizeAiDateForInput(aiData.date ?? "", originalQuery),
+    );
+
+    const normalizedSource = aiData.source?.trim();
+    const normalizedDestination = aiData.destination?.trim();
+
+    if (!normalizedSource || !normalizedDestination) {
+      throw new Error("AI could not extract source and destination from your request.");
+    }
+
+    setFormData((currentFormData) => ({
+      ...currentFormData,
+      from: normalizedSource,
+      to: normalizedDestination,
+      date: normalizedDate,
+      timePreference: aiData.time_preference || "any",
+      quickFilter: mapPreferenceToQuickFilter(aiData.preference),
+    }));
+  };
+
+  const applyAssistantFormPayload = (payload: AssistantFormPayload) => {
+    const nextFormData: SearchFormState = {
+      ...formData,
+      from: payload.source?.trim() || formData.from,
+      to: payload.destination?.trim() || formData.to,
+      date: payload.date ? validateInputDate(payload.date) : formData.date,
+      timePreference: payload.time_preference?.trim() || formData.timePreference,
+      trainClass: payload.class_type?.trim() || formData.trainClass,
+      quickFilter: payload.preference
+        ? mapPreferenceToQuickFilter(payload.preference)
+        : formData.quickFilter,
+    };
+
+    setFormData(nextFormData);
+    setSearchError("");
+    setParsedIntent({
+      source: nextFormData.from.trim(),
+      destination: nextFormData.to.trim(),
+      date: nextFormData.date,
+      time_preference: nextFormData.timePreference,
+      preference: mapQuickFilterToPreference(nextFormData.quickFilter),
+    });
+
+    return nextFormData;
+  };
+
+  const handleAssistantSearchResults = (payload: AssistantSearchPayload & AssistantFormPayload) => {
+    const nextFormData = applyAssistantFormPayload(payload.form ?? payload);
+
+    updateBooking({
+      from: nextFormData.from.trim(),
+      to: nextFormData.to.trim(),
+      date: nextFormData.date,
+      trainClass: nextFormData.trainClass,
+      quickFilter: nextFormData.quickFilter,
+      aiQuery: aiQuery.trim(),
+      parsedIntent: {
+        source: nextFormData.from.trim(),
+        destination: nextFormData.to.trim(),
+        date: nextFormData.date,
+        time_preference: nextFormData.timePreference,
+        preference: mapQuickFilterToPreference(nextFormData.quickFilter),
+      },
+      searchResults: payload.results ?? [],
+      searchError: "",
+      searchMessage: payload.message ?? "",
+      searchProvider: payload.provider ?? "",
+      selectedTrain: null,
+      selectedSeats: [],
+      passengers: [],
+      bookingResult: null,
+    });
+  };
+
+  const handleAskAi = async () => {
+    setAiError("");
+    setSearchError("");
+    setIsAskingAi(true);
+
+    try {
+      if (!aiQuery.trim()) {
+        throw new Error("Enter a natural language query before asking AI.");
+      }
+
+      const parseResponse = await parseIntent({ query: aiQuery.trim() });
+      const nextParsedIntent = parseResponse.data;
+
+      if (!nextParsedIntent) {
+        throw new Error("AI parsing did not return structured trip data.");
+      }
+
+      populateFormFromAi(nextParsedIntent, aiQuery);
+      setParsedIntent(nextParsedIntent);
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : "AI parsing failed");
+    } finally {
+      setIsAskingAi(false);
+    }
+  };
+
+  const runTrainSearch = async () => {
+    const validatedDate = validateInputDate(formData.date);
     const searchResponse = await searchTrains({
-      source,
-      destination,
-      date: journeyDate,
-      preference,
+      source: formData.from.trim(),
+      destination: formData.to.trim(),
+      date: validatedDate,
+      class_type: formData.trainClass,
+      time_preference: formData.timePreference,
+      preference: mapQuickFilterToPreference(formData.quickFilter),
     });
 
     updateBooking({
-      from: source,
-      to: destination,
-      date: journeyDate,
-      trainClass,
-      quickFilter,
-      aiQuery: naturalLanguageQuery,
-      parsedIntent: parsedIntentData,
+      from: formData.from.trim(),
+      to: formData.to.trim(),
+      date: validatedDate,
+      trainClass: formData.trainClass,
+      quickFilter: formData.quickFilter,
+      aiQuery: aiQuery.trim(),
+      parsedIntent,
       searchResults: searchResponse.data ?? [],
       searchError: "",
+      searchMessage: searchResponse.message ?? "",
+      searchProvider: searchResponse.provider ?? "",
       selectedTrain: null,
       selectedSeats: [],
       passengers: [],
@@ -103,63 +340,35 @@ export function Home() {
   };
 
   const handleSearch = async () => {
-    setSubmitError("");
+    setSearchError("");
+
     setIsSearching(true);
 
     try {
-      if (aiQuery.trim()) {
-        const parseResponse = await parseIntent({ query: aiQuery.trim() });
-        const parsedIntentData = parseResponse.data;
-
-        if (!parsedIntentData?.source || !parsedIntentData.destination || !parsedIntentData.date) {
-          throw new Error("AI could not extract source, destination, and date from your request.");
-        }
-
-        setFrom(parsedIntentData.source);
-        setTo(parsedIntentData.destination);
-        setDate(parsedIntentData.date);
-
-        await runTrainSearch(
-          parsedIntentData.source,
-          parsedIntentData.destination,
-          parsedIntentData.date,
-          parsedIntentData.preference || "balanced",
-          parsedIntentData,
-          aiQuery.trim(),
-        );
-
-        return;
-      }
-
-      if (!from || !to || !date) {
+      if (!formData.from.trim() || !formData.to.trim() || !formData.date) {
         throw new Error("Please select from, to, and date before searching.");
       }
 
-      await runTrainSearch(
-        from,
-        to,
-        date,
-        mapQuickFilterToPreference(quickFilter),
-        null,
-        "",
-      );
+      await runTrainSearch();
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Search failed");
+      setSearchError(error instanceof Error ? error.message : "Search failed");
     } finally {
       setIsSearching(false);
     }
   };
 
   const swapStations = () => {
-    const temp = from;
-    setFrom(to);
-    setTo(temp);
+    setFormData((currentFormData) => ({
+      ...currentFormData,
+      from: currentFormData.to,
+      to: currentFormData.from,
+    }));
   };
 
   const quickFilters = [
-    { id: "all", label: "All Trains", icon: TrendingUp },
-    { id: "tatkal", label: "Cheapest", icon: Zap },
-    { id: "premium", label: "Fastest", icon: Star },
+    { id: "all" as const, label: "All Trains", icon: TrendingUp },
+    { id: "tatkal" as const, label: "Cheapest", icon: Zap },
+    { id: "premium" as const, label: "Fastest", icon: Star },
   ];
 
   return (
@@ -204,14 +413,6 @@ export function Home() {
           <motion.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ delay: 0.4 }}
-            className="text-xl text-muted-foreground mb-2"
-          >
-            Travel smarter with a live Flask, PostgreSQL, and Gemini-backed booking flow.
-          </motion.p>
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
             transition={{ delay: 0.5 }}
             className="text-sm text-muted-foreground/70"
           >
@@ -230,10 +431,10 @@ export function Home() {
               <Sparkles className="w-5 h-5 text-purple-600 dark:text-purple-400" />
               <div className="flex-1">
                 <p className="text-sm font-semibold text-purple-900 dark:text-purple-100">
-                  Try: Book the cheapest train from Delhi to Lucknow on 2026-04-02 morning
+                  Try: I want to go from Delhi to Varanasi tomorrow at 15:00
                 </p>
                 <p className="text-xs text-purple-700 dark:text-purple-300">
-                  That will call the real <code>/ai/parse</code> and <code>/search</code> APIs.
+                  Ask AI fills the form first. Search Trains stays a separate action.
                 </p>
               </div>
             </div>
@@ -259,13 +460,39 @@ export function Home() {
             </label>
             <textarea
               value={aiQuery}
-              onChange={(event) => setAiQuery(event.target.value)}
+              onChange={(event) => {
+                setAiQuery(event.target.value);
+                setAiError("");
+              }}
               placeholder="Describe your trip in natural language..."
               className="w-full min-h-28 px-4 py-4 rounded-2xl bg-muted/30 border-2 border-border/30 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all resize-none"
             />
             <p className="text-xs text-muted-foreground mt-2">
-              Leave this blank to use the manual form below.
+              This only updates the AI query text. It will not overwrite the form until you click Ask AI.
             </p>
+
+            <div className="mt-4 flex flex-col sm:flex-row gap-3">
+              <GlowButton
+                onClick={handleAskAi}
+                disabled={isAskingAi}
+                className="sm:w-auto flex items-center justify-center gap-3"
+              >
+                <Bot className="w-5 h-5" />
+                {isAskingAi ? "Parsing Query..." : "Ask AI"}
+              </GlowButton>
+
+              {parsedIntent && !aiError && (
+                <div className="flex items-center px-4 py-3 rounded-2xl bg-green-50 text-green-700 dark:bg-green-950/20 dark:text-green-300 text-sm">
+                  Form filled from AI query.
+                </div>
+              )}
+            </div>
+
+            {aiError && (
+              <div className="mt-4 px-4 py-3 rounded-2xl border border-red-200 bg-red-50 text-red-700 dark:bg-red-950/20 dark:border-red-900 dark:text-red-300">
+                {aiError}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6 items-end">
@@ -277,17 +504,18 @@ export function Home() {
               <div className="relative">
                 <input
                   type="text"
-                  value={from}
+                  value={formData.from}
                   onChange={(event) => {
-                    setFrom(event.target.value);
+                    updateFormField("from", event.target.value);
                     setShowFromSuggestions(true);
+                    setSearchError("");
                   }}
                   onFocus={() => setShowFromSuggestions(true)}
                   onBlur={() => setTimeout(() => setShowFromSuggestions(false), 200)}
                   placeholder="Enter departure station"
                   className="w-full px-4 py-4 rounded-2xl bg-muted/30 border-2 border-border/30 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all"
                 />
-                {showFromSuggestions && from && filteredFromCities.length > 0 && (
+                {showFromSuggestions && formData.from && filteredFromCities.length > 0 && (
                   <motion.div
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -297,7 +525,7 @@ export function Home() {
                       <button
                         key={city}
                         onClick={() => {
-                          setFrom(city);
+                          updateFormField("from", city);
                           setShowFromSuggestions(false);
                         }}
                         className="w-full px-4 py-3 text-left hover:bg-muted/50 transition-colors"
@@ -332,17 +560,18 @@ export function Home() {
               <div className="relative">
                 <input
                   type="text"
-                  value={to}
+                  value={formData.to}
                   onChange={(event) => {
-                    setTo(event.target.value);
+                    updateFormField("to", event.target.value);
                     setShowToSuggestions(true);
+                    setSearchError("");
                   }}
                   onFocus={() => setShowToSuggestions(true)}
                   onBlur={() => setTimeout(() => setShowToSuggestions(false), 200)}
                   placeholder="Enter destination station"
                   className="w-full px-4 py-4 rounded-2xl bg-muted/30 border-2 border-border/30 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 outline-none transition-all"
                 />
-                {showToSuggestions && to && filteredToCities.length > 0 && (
+                {showToSuggestions && formData.to && filteredToCities.length > 0 && (
                   <motion.div
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -352,7 +581,7 @@ export function Home() {
                       <button
                         key={city}
                         onClick={() => {
-                          setTo(city);
+                          updateFormField("to", city);
                           setShowToSuggestions(false);
                         }}
                         className="w-full px-4 py-3 text-left hover:bg-muted/50 transition-colors"
@@ -373,9 +602,12 @@ export function Home() {
             </label>
             <input
               type="date"
-              value={date}
-              onChange={(event) => setDate(event.target.value)}
-              min={new Date().toISOString().split("T")[0]}
+              value={formData.date}
+              onChange={(event) => {
+                updateFormField("date", event.target.value);
+                setSearchError("");
+              }}
+              min={getTodayInputValue()}
               className="w-full px-4 py-4 rounded-2xl bg-muted/30 border-2 border-border/30 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all"
             />
           </div>
@@ -388,13 +620,13 @@ export function Home() {
                   key={cls}
                   whileHover={{ scale: 1.05, y: -2 }}
                   whileTap={{ scale: 0.95 }}
-                  onClick={() => setTrainClass(cls)}
+                  onClick={() => updateFormField("trainClass", cls)}
                   className={`px-6 py-3 rounded-full transition-all font-semibold ${
-                    trainClass === cls
+                    formData.trainClass === cls
                       ? "bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg"
                       : "bg-muted/30 text-foreground hover:bg-muted/50 border border-border/30"
                   }`}
-                  style={trainClass === cls ? {
+                  style={formData.trainClass === cls ? {
                     boxShadow: "0 0 20px rgba(139, 92, 246, 0.3)",
                   } : {}}
                 >
@@ -414,13 +646,13 @@ export function Home() {
                     key={filter.id}
                     whileHover={{ scale: 1.05, y: -2 }}
                     whileTap={{ scale: 0.95 }}
-                    onClick={() => setQuickFilter(filter.id)}
+                    onClick={() => updateFormField("quickFilter", filter.id)}
                     className={`flex items-center gap-2 px-6 py-3 rounded-full transition-all font-semibold ${
-                      quickFilter === filter.id
+                      formData.quickFilter === filter.id
                         ? "bg-gradient-to-r from-purple-500 to-pink-600 text-white shadow-lg"
                         : "bg-muted/30 text-foreground hover:bg-muted/50 border border-border/30"
                     }`}
-                    style={quickFilter === filter.id ? {
+                    style={formData.quickFilter === filter.id ? {
                       boxShadow: "0 0 20px rgba(236, 72, 153, 0.3)",
                     } : {}}
                   >
@@ -432,9 +664,9 @@ export function Home() {
             </div>
           </div>
 
-          {submitError && (
+          {searchError && (
             <div className="mb-6 px-4 py-3 rounded-2xl border border-red-200 bg-red-50 text-red-700 dark:bg-red-950/20 dark:border-red-900 dark:text-red-300">
-              {submitError}
+              {searchError}
             </div>
           )}
 
@@ -444,7 +676,7 @@ export function Home() {
             className="w-full flex items-center justify-center gap-3 text-lg"
           >
             <Search className="w-6 h-6" />
-            {isSearching ? "Searching..." : aiQuery.trim() ? "Search With AI" : "Search Trains"}
+            {isSearching ? "Searching..." : "Search Trains"}
           </GlowButton>
         </FloatingCard>
 
@@ -465,9 +697,10 @@ export function Home() {
                   key={index}
                   className="p-4 cursor-pointer flex-shrink-0 min-w-[200px]"
                   onClick={() => {
-                    setFrom(search.from);
-                    setTo(search.to);
+                    updateFormField("from", search.from);
+                    updateFormField("to", search.to);
                     setAiQuery("");
+                    setAiError("");
                   }}
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold">
@@ -495,9 +728,10 @@ export function Home() {
               <FloatingCard key={index} className="p-5 cursor-pointer group" delay={0.6 + index * 0.1}>
                 <div
                   onClick={() => {
-                    setFrom(route.from);
-                    setTo(route.to);
+                    updateFormField("from", route.from);
+                    updateFormField("to", route.to);
                     setAiQuery("");
+                    setAiError("");
                   }}
                   className="space-y-3"
                 >
@@ -521,7 +755,18 @@ export function Home() {
         </motion.div>
       </div>
 
-      <FloatingChatbot />
+      <FloatingChatbot
+        currentForm={{
+          source: formData.from.trim(),
+          destination: formData.to.trim(),
+          date: formData.date,
+          time_preference: formData.timePreference,
+          class_type: formData.trainClass,
+          preference: mapQuickFilterToPreference(formData.quickFilter),
+        }}
+        onFillForm={applyAssistantFormPayload}
+        onSearchResults={handleAssistantSearchResults}
+      />
     </div>
   );
 }

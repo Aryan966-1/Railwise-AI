@@ -27,6 +27,8 @@ export function TrainList() {
     trainClass,
     searchResults,
     searchError,
+    searchMessage,
+    searchProvider,
     updateBooking,
   } = useBookingStore();
   const [sortBy, setSortBy] = useState<"price" | "duration" | "departure">("departure");
@@ -36,13 +38,13 @@ export function TrainList() {
   const filteredTrains = useMemo(() => {
     let trains = [...searchResults];
 
-    if (trainClass) {
-      trains = trains.filter((train) => train.class_type.toLowerCase() === trainClass.toLowerCase());
-    }
-
     trains = trains.filter((train) => train.price >= priceRange[0] && train.price <= priceRange[1]);
 
     trains.sort((a, b) => {
+      if (a.has_seat_data !== b.has_seat_data) {
+        return a.has_seat_data === false ? 1 : -1;
+      }
+
       switch (sortBy) {
         case "price":
           return a.price - b.price;
@@ -56,9 +58,13 @@ export function TrainList() {
     });
 
     return trains;
-  }, [priceRange, searchResults, sortBy, trainClass]);
+  }, [priceRange, searchResults, sortBy]);
 
   const handleSelectTrain = (train: (typeof filteredTrains)[number]) => {
+    if (train.has_seat_data === false) {
+      return;
+    }
+
     updateBooking({
       selectedTrain: train,
       selectedSeats: [],
@@ -68,8 +74,9 @@ export function TrainList() {
     navigate("/seats");
   };
 
-  const lowestPrice = filteredTrains.length > 0
-    ? Math.min(...filteredTrains.map((train) => train.price))
+  const pricedTrains = filteredTrains.filter((train) => train.has_seat_data !== false);
+  const lowestPrice = pricedTrains.length > 0
+    ? Math.min(...pricedTrains.map((train) => train.price))
     : 0;
 
   return (
@@ -94,7 +101,7 @@ export function TrainList() {
             <span className="hidden md:inline">|</span>
             <span>{date || "No date selected"}</span>
             <span className="hidden md:inline">|</span>
-            <span>Class {trainClass}</span>
+            <span>Requested Class {trainClass}</span>
           </motion.div>
         </div>
 
@@ -186,12 +193,19 @@ export function TrainList() {
               </FloatingCard>
             )}
 
+            {!searchError && searchMessage && filteredTrains.length > 0 && (
+              <FloatingCard className="p-6 border border-blue-200 bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:border-blue-900 dark:text-blue-300">
+                {searchMessage}
+                {searchProvider ? ` (${searchProvider})` : ""}
+              </FloatingCard>
+            )}
+
             {!searchError && filteredTrains.length === 0 && (
               <FloatingCard className="p-8 text-center">
                 <Sparkles className="w-10 h-10 mx-auto mb-4 text-blue-500" />
                 <h3 className="text-xl font-semibold mb-2">No trains found</h3>
                 <p className="text-muted-foreground mb-4">
-                  The backend responded successfully, but there are no matching trains for this route, date, and class.
+                  {searchMessage || "The backend responded successfully, but there are no matching trains for this route and date."}
                 </p>
                 <button
                   onClick={() => navigate("/")}
@@ -256,7 +270,9 @@ export function TrainList() {
                           />
                         </div>
                         <span className="text-sm text-muted-foreground">
-                          {train.available_seats} of {train.total_seats} seats
+                          {train.has_seat_data === false
+                            ? "Seat data unavailable"
+                            : `${train.available_seats} of ${train.total_seats} seats`}
                         </span>
                       </div>
 
@@ -265,20 +281,30 @@ export function TrainList() {
 
                     <div className="flex lg:flex-col items-center lg:items-end justify-between lg:justify-center gap-4">
                       <div className="text-right">
-                        <div className="flex items-center gap-1 text-3xl font-bold">
-                          <IndianRupee className="w-6 h-6" />
-                          {train.price}
-                        </div>
-                        <p className="text-xs text-muted-foreground">per booking</p>
+                        {train.has_seat_data === false ? (
+                          <>
+                            <div className="text-2xl font-bold">Fare TBD</div>
+                            <p className="text-xs text-muted-foreground">seat details pending</p>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-1 text-3xl font-bold">
+                              <IndianRupee className="w-6 h-6" />
+                              {train.price}
+                            </div>
+                            <p className="text-xs text-muted-foreground">per booking</p>
+                          </>
+                        )}
                       </div>
                       <motion.button
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
+                        whileHover={{ scale: train.has_seat_data === false ? 1 : 1.05 }}
+                        whileTap={{ scale: train.has_seat_data === false ? 1 : 0.95 }}
                         onClick={() => handleSelectTrain(train)}
-                        className="px-8 py-3 rounded-2xl bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold shadow-lg hover:shadow-xl transition-all flex items-center gap-2 whitespace-nowrap"
+                        disabled={train.has_seat_data === false}
+                        className="px-8 py-3 rounded-2xl bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold shadow-lg hover:shadow-xl transition-all flex items-center gap-2 whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        Select
-                        <ChevronRight className="w-5 h-5" />
+                        {train.has_seat_data === false ? "Seat Details Pending" : "Select"}
+                        {train.has_seat_data !== false && <ChevronRight className="w-5 h-5" />}
                       </motion.button>
                     </div>
                   </div>

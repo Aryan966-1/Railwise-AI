@@ -17,7 +17,7 @@ export function ProgressIndicator() {
   const currentStepIndex = steps.findIndex(step => step.path === location.pathname);
   const currentStep = currentStepIndex === -1 ? 0 : currentStepIndex;
 
-  if (location.pathname === '/') return null;
+  if (location.pathname === '/' || currentStepIndex === -1) return null;
 
   return (
     <div className="w-full max-w-4xl mx-auto px-4 py-8">

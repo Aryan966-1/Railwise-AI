@@ -78,6 +78,10 @@ export function Confirmation() {
     navigate("/");
   };
 
+  const handleViewMyBookings = () => {
+    navigate("/my-bookings");
+  };
+
   if (!selectedTrain || selectedSeats.length === 0 || !bookingResult) {
     navigate("/");
     return null;
@@ -144,14 +148,14 @@ export function Confirmation() {
                   <MapPin className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-1" />
                   <div>
                     <p className="text-sm text-muted-foreground">Route</p>
-                    <p className="font-semibold">{from} to {to}</p>
+                    <p className="font-semibold">{bookingResult.source || from} to {bookingResult.destination || to}</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <Calendar className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-1" />
                   <div>
                     <p className="text-sm text-muted-foreground">Journey Date</p>
-                    <p className="font-semibold">{formatReadableDate(date)}</p>
+                    <p className="font-semibold">{formatReadableDate(bookingResult.journey_date || date)}</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
@@ -164,8 +168,8 @@ export function Confirmation() {
                 <div className="flex items-start gap-3">
                   <Users className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-1" />
                   <div>
-                    <p className="text-sm text-muted-foreground">Seat</p>
-                    <p className="font-semibold">{selectedSeats.join(", ")}</p>
+                    <p className="text-sm text-muted-foreground">Class and Seats</p>
+                    <p className="font-semibold">{bookingResult.class_type} | {selectedSeats.join(", ")}</p>
                   </div>
                 </div>
               </div>
@@ -209,7 +213,7 @@ export function Confirmation() {
           </div>
         </FloatingCard>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
@@ -237,6 +241,15 @@ export function Confirmation() {
             className="py-3 px-6 rounded-2xl border-2 border-border/50 hover:border-border font-semibold transition-all flex items-center justify-center gap-2"
           >
             Book Another
+          </motion.button>
+
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={handleViewMyBookings}
+            className="py-3 px-6 rounded-2xl border-2 border-border/50 hover:border-border font-semibold transition-all flex items-center justify-center gap-2"
+          >
+            My Bookings
           </motion.button>
         </div>
       </div>

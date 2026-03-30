@@ -30,10 +30,12 @@ def create_app():
     CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
     from app.routes.ai_routes import ai_bp
+    from app.routes.assistant_routes import assistant_bp
     from app.routes.train_routes import train_bp
     from app.routes.booking_routes import booking_bp
 
     app.register_blueprint(ai_bp)
+    app.register_blueprint(assistant_bp)
     app.register_blueprint(train_bp)
     app.register_blueprint(booking_bp)
 
