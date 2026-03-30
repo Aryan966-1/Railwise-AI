@@ -1,2 +1,27 @@
 # Railwise-AI
-AI-powered redesign of an IRCTC-style railway ticket booking system focused on reducing booking time, improving success rates, and minimizing user errors through intelligent UI assistance, real-time recommendations, and predictive seat availability.
+
+## 🚀 Problem
+IRCTC-style booking systems are slow, confusing, and inefficient during high-demand scenarios like Tatkal booking.
+
+## 💡 Solution
+Railwise-AI introduces an AI assistant that:
+- understands user intent
+- recommends optimal trains
+- simplifies booking flow
+- reduces errors and time
+
+## 🧠 Features
+- Natural language booking queries
+- AI-based train recommendations
+- Booking flow optimization
+- Modular backend with AI services
+
+## 🛠 Tech Stack
+- Backend: Django (Python)
+- Frontend: React + Vite
+- AI: Google Gemini API
+- Database: PostgreSQL
+
+## ⚙️ Setup
+
+1. Clone the repo:
